@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Vice Coast 3D</string>
+    <string name="game_subtitle">JASON DUVAL • LEONIDA SANDBOX</string>
+    <string name="cta_enter_city">ENTER VICE COAST</string>
+    <string name="cta_continue_city">CONTINUE SANDBOX</string>
+    <string name="cta_new_sandbox">RESET PROGRESS</string>
+    <string name="hud_armory_prompt">OPEN VICE ARMORY</string>
+    <string name="hud_enter_vehicle">ENTER</string>
+    <string name="hud_exit_vehicle">EXIT</string>
+    <string name="hud_wasted">WASTED</string>
+    <string name="hud_busted">BUSTED</string>
+    <string name="hud_respawn">RESPAWN AT CLINIC</string>
+    <string name="armory_title">VICE ARMORY</string>
+    <string name="map_title">VICE COAST TACTICAL MAP</string>
+</resources>

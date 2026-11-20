@@ -1,0 +1,6 @@
+{
+  "name": "Vice Coast 3D",
+  "description": "OpenGL ES 3D Vice-inspired open-world action sandbox starring Jason Duval with drivable vehicles, weapons, dynamic NPCs, police pursuits, and tactical radar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
