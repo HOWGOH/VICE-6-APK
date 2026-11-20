@@ -307,20 +307,26 @@ fun ViceArmoryModal(
                 Column(modifier = Modifier.weight(1f)) {
                   Text(w.displayName, style = MaterialTheme.typography.titleMedium, color = Color(w.accentHex))
                   Text(
-                    "DMG ${w.damage.toInt()} • RNG ${w.range.toInt()}m • MAG ${w.clipSize}",
+                    text =
+                      if (w.isMelee) "DMG ${w.damage.toInt()} • MELEE • HEAVY KNOCKBACK"
+                      else "DMG ${w.damage.toInt()} • RNG ${w.range.toInt()}m • MAG ${w.clipSize}",
                     style = MaterialTheme.typography.labelSmall,
                     color = ViceTextMuted,
                   )
                   Spacer(Modifier.height(4.dp))
                   LinearProgressIndicator(
-                    progress = { (w.damage * w.pellets / 120f).coerceIn(0.15f, 1f) },
+                    progress = { (w.damage * w.pellets / 150f).coerceIn(0.15f, 1f) },
                     modifier = Modifier.fillMaxWidth(0.75f).height(5.dp).clip(RoundedCornerShape(3.dp)),
                     color = Color(w.accentHex),
                     trackColor = ViceMidnight,
                   )
                   if (slot.unlocked) {
                     Spacer(Modifier.height(3.dp))
-                    Text("Ammo: ${slot.clipAmmo} + ${slot.reserveAmmo}", style = MaterialTheme.typography.labelSmall, color = ViceMint)
+                    Text(
+                      text = if (w.isMelee) "Owned • Unlimited" else "Ammo: ${slot.clipAmmo} + ${slot.reserveAmmo}",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = ViceMint,
+                    )
                   }
                 }
 
@@ -346,13 +352,15 @@ fun ViceArmoryModal(
                           Text("EQUIP", color = ViceCyan)
                         }
                       }
-                      Button(
-                        onClick = { onBuyWeaponOrAmmo(w) },
-                        enabled = slot.reserveAmmo < w.reserveCap && hud.cash >= w.ammoPackCost,
-                        colors = ButtonDefaults.buttonColors(containerColor = ViceGold, contentColor = ViceMidnight),
-                        modifier = Modifier.height(48.dp).testTag("ammo_${w.id}"),
-                      ) {
-                        Text(if (slot.reserveAmmo >= w.reserveCap) "MAX" else "+${w.ammoPackAmount} ($${w.ammoPackCost})")
+                      if (!w.isMelee) {
+                        Button(
+                          onClick = { onBuyWeaponOrAmmo(w) },
+                          enabled = slot.reserveAmmo < w.reserveCap && hud.cash >= w.ammoPackCost,
+                          colors = ButtonDefaults.buttonColors(containerColor = ViceGold, contentColor = ViceMidnight),
+                          modifier = Modifier.height(48.dp).testTag("ammo_${w.id}"),
+                        ) {
+                          Text(if (slot.reserveAmmo >= w.reserveCap) "MAX" else "+${w.ammoPackAmount} ($${w.ammoPackCost})")
+                        }
                       }
                     }
                   }
@@ -610,8 +618,8 @@ fun WastedBustedOverlay(
         Text(title, style = MaterialTheme.typography.displayLarge, color = bannerColor)
         Text(
           text =
-            if (isBusted) "VCPD apprehended Jason Duval. Bail fee: $$penaltyPaid (up to $100)."
-            else "Jason Duval was dropped off at Vice Clinic. Medical fee deducted on discharge.",
+            if (isBusted) "VCPD apprehended the suspect. Bail fee: $$penaltyPaid (up to $100)."
+            else "Dropped off at Vice Clinic. Medical fee deducted on discharge.",
           style = MaterialTheme.typography.bodyMedium,
           color = ViceTextMuted,
         )

@@ -2,11 +2,14 @@ package com.example
 
 import com.example.game.audio.ViceAudioEngine
 import com.example.game.engine.ViceGameEngine
+import com.example.game.model.DriverRole
 import com.example.game.model.GamePhase
+import com.example.game.model.PlayableCharacter
 import com.example.game.model.WeaponType
 import com.example.game.world.CityMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,19 +29,52 @@ class ViceGameEngineTest {
   }
 
   @Test
+  fun engine_switchCharacterBetweenJasonAndLucia() {
+    val audio = ViceAudioEngine().apply { isMuted = true }
+    val engine = ViceGameEngine(audio)
+    assertEquals(PlayableCharacter.JASON, engine.getHudState().activeCharacter)
+
+    engine.switchCharacter()
+    assertEquals(PlayableCharacter.LUCIA, engine.getHudState().activeCharacter)
+
+    engine.switchCharacter()
+    assertEquals(PlayableCharacter.JASON, engine.getHudState().activeCharacter)
+  }
+
+  @Test
+  fun engine_npcTrafficDrivesAndTimeOfDayAdvances() {
+    val audio = ViceAudioEngine().apply { isMuted = true }
+    val engine = ViceGameEngine(audio)
+    engine.setPhase(GamePhase.PLAYING)
+
+    val initialTraffic =
+      engine.getRenderSnapshot().vehicles.filter { it.driverRole == DriverRole.CIVILIAN_AI }
+    assertTrue(initialTraffic.isNotEmpty())
+    val tracked = initialTraffic.first()
+    val startX = tracked.x
+    val startZ = tracked.z
+    val startTime = engine.getHudState().timeOfDay
+
+    repeat(60) { engine.step(0.016f) }
+
+    val afterTraffic =
+      engine.getRenderSnapshot().vehicles.first { it.id == tracked.id }
+    assertTrue(afterTraffic.x != startX || afterTraffic.z != startZ)
+    assertNotEquals(startTime, engine.getHudState().timeOfDay)
+  }
+
+  @Test
   fun engine_enterDriveAndExitVehicleWorks() {
     val audio = ViceAudioEngine().apply { isMuted = true }
     val engine = ViceGameEngine(audio)
     engine.setPhase(GamePhase.PLAYING)
 
-    // Walk toward the parked Magenta Vice Coupe at (80f, 16f)
     engine.moveStickX = 0.5f
     engine.moveStickY = -0.8f
     repeat(120) { engine.step(0.016f) }
     engine.moveStickX = 0f
     engine.moveStickY = 0f
 
-    // Verify proximity or enter directly from spawn vicinity
     val hudBefore = engine.getHudState()
     if (hudBefore.canEnterVehicle) {
       engine.toggleEnterExitVehicle()
@@ -53,20 +89,20 @@ class ViceGameEngineTest {
   }
 
   @Test
-  fun engine_armoryPurchasesAndWeaponSwitching() {
+  fun engine_armoryPurchasesAndNewWeapons() {
     val audio = ViceAudioEngine().apply { isMuted = true }
     val engine = ViceGameEngine(audio)
     engine.setPhase(GamePhase.PLAYING)
 
     assertEquals(350, engine.getHudState().cash)
-    assertTrue(engine.buyWeaponOrAmmo(WeaponType.SMG))
-    assertEquals(100, engine.getHudState().cash)
-    assertEquals(WeaponType.SMG, engine.getHudState().activeWeapon)
+    assertTrue(engine.buyWeaponOrAmmo(WeaponType.BAT))
+    assertEquals(230, engine.getHudState().cash)
+    assertEquals(WeaponType.BAT, engine.getHudState().activeWeapon)
 
     engine.selectWeapon(WeaponType.PISTOL)
     assertEquals(WeaponType.PISTOL, engine.getHudState().activeWeapon)
-
-    // Insufficient funds for 150 armor when cash is 100
+    assertTrue(engine.buyArmor())
+    assertEquals(80, engine.getHudState().cash)
     assertFalse(engine.buyArmor())
   }
 

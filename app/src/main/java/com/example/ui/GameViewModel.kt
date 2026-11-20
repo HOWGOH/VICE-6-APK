@@ -58,6 +58,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     _hudState.value = gameEngine.getHudState()
   }
 
+  fun switchCharacter() {
+    gameEngine.switchCharacter()
+    refreshHud()
+  }
+
   fun enterCity() {
     gameEngine.setPhase(GamePhase.PLAYING)
     refreshHud()
@@ -167,6 +172,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     val snap = gameEngine.exportSaveSnapshot()
     viewModelScope.launch {
       saveRepo.save(
+        activeCharacter = snap.activeCharacter,
         cash = snap.cash,
         armor = snap.armor,
         totalEliminations = snap.totalEliminations,

@@ -71,6 +71,9 @@ class ShaderProgram(vertexSrc: String, fragmentSrc: String) {
 
       uniform vec3 uCameraPos;
       uniform vec3 uSunDir;
+      uniform vec3 uAmbientColor;
+      uniform vec3 uSunColor;
+      uniform float uNeonBoost;
       uniform vec3 uFogColor;
       uniform float uFogStart;
       uniform float uFogEnd;
@@ -80,10 +83,9 @@ class ShaderProgram(vertexSrc: String, fragmentSrc: String) {
       void main() {
         vec3 n = normalize(vNormal);
         float ndl = max(dot(n, normalize(uSunDir)), 0.0);
-        vec3 ambient = vec3(0.42, 0.36, 0.50);
-        vec3 sunLight = vec3(1.00, 0.78, 0.68) * (ndl * 0.78);
-        vec3 lit = vColor.rgb * (ambient + sunLight);
-        vec3 finalRgb = mix(lit, vColor.rgb * 1.25, vEmissive);
+        vec3 lit = vColor.rgb * (uAmbientColor + uSunColor * ndl);
+        vec3 emissiveColor = vColor.rgb * (1.18 + uNeonBoost * 0.35);
+        vec3 finalRgb = mix(lit, emissiveColor, vEmissive);
 
         float dist = length(uCameraPos - vWorldPos);
         float fogFactor = clamp((dist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
@@ -110,15 +112,15 @@ class ShaderProgram(vertexSrc: String, fragmentSrc: String) {
       #version 300 es
       precision mediump float;
       in vec2 vUv;
+      uniform vec3 uSkyBottom;
+      uniform vec3 uSkyMid;
+      uniform vec3 uSkyTop;
       out vec4 fragColor;
       void main() {
-        vec3 bottom = vec3(0.24, 0.09, 0.28);
-        vec3 mid = vec3(0.46, 0.13, 0.40);
-        vec3 top = vec3(0.05, 0.04, 0.13);
         float t = clamp(vUv.y, 0.0, 1.0);
         vec3 col = t < 0.45
-          ? mix(bottom, mid, t / 0.45)
-          : mix(mid, top, (t - 0.45) / 0.55);
+          ? mix(uSkyBottom, uSkyMid, t / 0.45)
+          : mix(uSkyMid, uSkyTop, (t - 0.45) / 0.55);
         fragColor = vec4(col, 1.0);
       }
       """

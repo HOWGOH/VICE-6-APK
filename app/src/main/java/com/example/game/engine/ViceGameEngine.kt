@@ -11,12 +11,19 @@ import com.example.game.model.DriverRole
 import com.example.game.model.ExplosionEffect
 import com.example.game.model.GameHudState
 import com.example.game.model.GamePhase
+import com.example.game.model.HitmarkerEvent
+import com.example.game.model.KillFeedItem
+import com.example.game.model.NpcActivity
 import com.example.game.model.NpcBehavior
 import com.example.game.model.NpcEntity
 import com.example.game.model.NpcRole
+import com.example.game.model.PlayableCharacter
 import com.example.game.model.ProjectileTracer
 import com.example.game.model.RadarBlip
 import com.example.game.model.RadioStation
+import com.example.game.model.RocketProjectile
+import com.example.game.model.SmokeParticle
+import com.example.game.model.TireSkidDecal
 import com.example.game.model.VehicleEntity
 import com.example.game.model.VehicleType
 import com.example.game.model.WeaponInventorySlot
@@ -33,6 +40,8 @@ import kotlin.random.Random
 
 data class RenderSnapshot(
   val timeSec: Float,
+  val timeOfDay: Float,
+  val activeCharacter: PlayableCharacter,
   val playerX: Float,
   val playerZ: Float,
   val playerHeading: Float,
@@ -41,6 +50,7 @@ data class RenderSnapshot(
   val playerInVehicleId: Int?,
   val activeWeapon: WeaponType,
   val muzzleFlashTimer: Float,
+  val dualLeftMuzzle: Boolean,
   val cameraYaw: Float,
   val cameraPitch: Float,
   val cameraShake: Float,
@@ -49,9 +59,12 @@ data class RenderSnapshot(
   val vehicles: List<VehicleEntity>,
   val npcs: List<NpcEntity>,
   val bloodDecals: List<BloodDecal>,
+  val skidDecals: List<TireSkidDecal>,
   val bloodParticles: List<BloodParticle>,
+  val smokeParticles: List<SmokeParticle>,
   val cashPickups: List<CashPickup>,
   val tracers: List<ProjectileTracer>,
+  val rockets: List<RocketProjectile>,
   val explosions: List<ExplosionEffect>,
 )
 
@@ -59,13 +72,14 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   private val lock = Any()
   private val rng = Random(System.currentTimeMillis())
 
-  // World Simulation State
   var phase: GamePhase = GamePhase.TITLE
     private set
 
   private var simTime = 0f
+  private var timeOfDay = 0.06f // Starts at golden Vice sunset -> cycles through neon night -> dawn -> day
 
-  // Player (Jason Duval)
+  // Protagonist (Jason Duval / Lucia Caminos)
+  private var activeCharacter = PlayableCharacter.JASON
   private var playerX = 76f
   private var playerZ = 8f
   private var playerHeading = 0f
@@ -73,12 +87,13 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   private var playerHp = 100f
   private var playerArmor = 25f
   private var cash = 350
-  private var activeWeaponIndex = 1 // Pistol default
+  private var activeWeaponIndex = 2 // 9mm Pistol default
   private val inventory = mutableListOf<WeaponInventorySlot>()
   private var fireCooldown = 0f
   private var reloadTimer = 0f
   private var isReloading = false
   private var muzzleFlashTimer = 0f
+  private var dualLeftShot = false
 
   // Camera
   private var cameraYaw = 0f
@@ -91,13 +106,15 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   private var timeSincePoliceSeen = 0f
   private var bustedProgress = 0f
 
-  // Career Stats
+  // Career & HUD Feedback
   private var totalEliminations = 0
   private var totalEarned = 0
   private var highestWanted = 0
   private var lastPenaltyPaid = 0
   private var latestCashPopup: CashPopup? = null
-  private var popupCounter = 0L
+  private var latestHitmarker: HitmarkerEvent? = null
+  private val killFeed = mutableListOf<Pair<Float, KillFeedItem>>()
+  private var eventCounter = 0L
 
   // Vehicle & Radio
   private var playerVehicleId: Int? = null
@@ -122,9 +139,12 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   private val vehicles = mutableListOf<VehicleEntity>()
   private val npcs = mutableListOf<NpcEntity>()
   private val bloodDecals = mutableListOf<BloodDecal>()
+  private val skidDecals = mutableListOf<TireSkidDecal>()
   private val bloodParticles = mutableListOf<BloodParticle>()
+  private val smokeParticles = mutableListOf<SmokeParticle>()
   private val cashPickups = mutableListOf<CashPickup>()
   private val tracers = mutableListOf<ProjectileTracer>()
+  private val rockets = mutableListOf<RocketProjectile>()
   private val explosions = mutableListOf<ExplosionEffect>()
 
   private var nextEntityId = 100
@@ -142,6 +162,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
 
   fun applySavedState(saved: SavedSandboxState) {
     synchronized(lock) {
+      activeCharacter = saved.activeCharacter
       cash = saved.cash
       playerArmor = saved.armor.toFloat()
       totalEliminations = saved.totalEliminations
@@ -154,8 +175,8 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       inventory.clear()
       inventory.addAll(saved.inventory)
       if (activeWeaponIndex !in inventory.indices || !inventory[activeWeaponIndex].unlocked) {
-        activeWeaponIndex = inventory.indexOfFirst { it.unlocked && it.type != WeaponType.FISTS }
-          .takeIf { it >= 0 } ?: 0
+        activeWeaponIndex =
+          inventory.indexOfFirst { it.unlocked && !it.type.isMelee }.takeIf { it >= 0 } ?: 0
       }
     }
   }
@@ -164,6 +185,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     synchronized(lock) {
       return SavedSandboxState(
         hasSave = true,
+        activeCharacter = activeCharacter,
         cash = cash,
         armor = playerArmor.toInt(),
         totalEliminations = totalEliminations,
@@ -187,38 +209,38 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         }
       }
     )
-    activeWeaponIndex = 1
+    activeWeaponIndex = WeaponType.entries.indexOf(WeaponType.PISTOL)
   }
 
   private fun populateWorldEntities() {
     vehicles.clear()
     npcs.clear()
     bloodDecals.clear()
+    skidDecals.clear()
     bloodParticles.clear()
+    smokeParticles.clear()
     cashPickups.clear()
     tracers.clear()
+    rockets.clear()
     explosions.clear()
+    killFeed.clear()
 
-    // Spawn iconic Vice vehicles across the districts
-    val initialCars =
+    // Parked hero cars nearby for instant access
+    val parkedCars =
       listOf(
-        Triple(VehicleType.SPORTS_COUPE, 80f to 16f, Triple(0.98f, 0.18f, 0.56f)), // Neon Magenta Cheetah near Jason
-        Triple(VehicleType.MUSCLE_SEDAN, 55f to -14f, Triple(0.05f, 0.85f, 0.95f)), // Electric Cyan Sabre
-        Triple(VehicleType.SPORTS_COUPE, 0f to 28f, Triple(1.0f, 0.74f, 0.16f)), // Sunset Gold Cheetah downtown
-        Triple(VehicleType.POLICE_CRUISER, -4f to -55f, Triple(0.95f, 0.96f, 1.0f)), // VCPD parked cruiser
-        Triple(VehicleType.MUSCLE_SEDAN, 92f to -45f, Triple(0.22f, 0.90f, 0.55f)), // Mint Ocean Drive
-        Triple(VehicleType.SPORTS_COUPE, -55f to 42f, Triple(0.65f, 0.35f, 1.0f)), // Downtown West
-        Triple(VehicleType.MUSCLE_SEDAN, -110f to -20f, Triple(0.92f, 0.32f, 0.24f)), // Industrial loop
-        Triple(VehicleType.POLICE_CRUISER, 55f to 55f, Triple(0.95f, 0.96f, 1.0f)), // South Strip VCPD
+        Triple(VehicleType.SPORTS_COUPE, 80f to 16f, Triple(0.98f, 0.18f, 0.56f)),
+        Triple(VehicleType.MUSCLE_SEDAN, 55f to -14f, Triple(0.05f, 0.85f, 0.95f)),
+        Triple(VehicleType.SPORTS_COUPE, 0f to 28f, Triple(1.0f, 0.74f, 0.16f)),
+        Triple(VehicleType.POLICE_CRUISER, -4f to -55f, Triple(0.95f, 0.96f, 1.0f)),
       )
-    for ((type, pos, col) in initialCars) {
+    for ((type, pos, col) in parkedCars) {
       vehicles.add(
         VehicleEntity(
           id = nextEntityId++,
           type = type,
           x = pos.first,
           z = pos.second,
-          heading = if (abs(pos.first) in setOf(0f, 55f, 92f, 110f)) 0f else (PI * 0.5).toFloat(),
+          heading = 0f,
           bodyR = col.first,
           bodyG = col.second,
           bodyB = col.third,
@@ -226,49 +248,220 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       )
     }
 
-    // Spawn 22 Civilians along sidewalks and boardwalk
-    repeat(22) { spawnCivilian() }
+    // Spawn 10 active NPC road traffic vehicles across the grid
+    repeat(10) { idx -> spawnTrafficVehicle(preferCruiser = idx == 3 || idx == 8) }
+
+    // Spawn diverse Pedestrians (Strollers, Joggers, Beachgoers, Chatting pairs)
+    repeat(10) { spawnPedestrian(NpcActivity.STROLLER) }
+    repeat(5) { spawnPedestrian(NpcActivity.JOGGER) }
+    repeat(5) { spawnPedestrian(NpcActivity.BEACHGOER) }
+    repeat(3) { spawnChattingPair() }
   }
 
-  private fun spawnCivilian(nearPlayer: Boolean = false) {
-    val node = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
-    var x = node.x + (rng.nextFloat() * 4f - 2f)
-    var z = node.z + (rng.nextFloat() * 4f - 2f)
-    if (nearPlayer && hypot(x - playerX, z - playerZ) < 18f) {
-      x = -x
+  private fun spawnTrafficVehicle(preferCruiser: Boolean = false) {
+    val axis = rng.nextInt(2) // 0 = vertical road, 1 = horizontal road
+    val dir = if (rng.nextBoolean()) 1 else -1
+    val roadLine =
+      if (axis == 0) CityMap.verticalRoads[rng.nextInt(CityMap.verticalRoads.size)]
+      else CityMap.horizontalRoads[rng.nextInt(CityMap.horizontalRoads.size)]
+
+    val laneOffset = 3.0f
+    var x: Float
+    var z: Float
+    val heading: Float
+    if (axis == 0) {
+      x = roadLine.pos - dir * laneOffset
+      z = -115f + rng.nextFloat() * 230f
+      heading = if (dir > 0) 0f else PI.toFloat()
+    } else {
+      z = roadLine.pos + dir * laneOffset
+      x = -125f + rng.nextFloat() * 210f
+      heading = if (dir > 0) (PI * 0.5).toFloat() else (-PI * 0.5).toFloat()
     }
-    val resolved = CityMap.resolveCircleCollision(x, z, 0.5f)
-    val shirts =
+
+    // Avoid spawning right on top of player or another car
+    if (hypot(x - playerX, z - playerZ) < 18f) {
+      z = -z
+    }
+    if (vehicles.any { hypot(it.x - x, it.z - z) < 9f }) return
+
+    val type =
+      when {
+        preferCruiser -> VehicleType.POLICE_CRUISER
+        rng.nextFloat() < 0.45f -> VehicleType.SPORTS_COUPE
+        else -> VehicleType.MUSCLE_SEDAN
+      }
+    val trafficPalette =
       listOf(
-        Triple(1.0f, 0.25f, 0.58f),
-        Triple(0.12f, 0.88f, 0.92f),
-        Triple(1.0f, 0.78f, 0.24f),
-        Triple(0.96f, 0.95f, 0.98f),
-        Triple(0.35f, 0.92f, 0.58f),
-        Triple(0.66f, 0.42f, 0.98f),
+        Triple(0.98f, 0.22f, 0.58f),
+        Triple(0.06f, 0.88f, 0.96f),
+        Triple(1.0f, 0.76f, 0.20f),
+        Triple(0.24f, 0.90f, 0.56f),
+        Triple(0.68f, 0.42f, 0.98f),
+        Triple(0.94f, 0.36f, 0.26f),
+        Triple(0.90f, 0.92f, 0.98f),
       )
+    val col =
+      if (type.isPolice) Triple(0.95f, 0.96f, 1.0f)
+      else trafficPalette[rng.nextInt(trafficPalette.size)]
+
+    vehicles.add(
+      VehicleEntity(
+        id = nextEntityId++,
+        type = type,
+        x = x,
+        z = z,
+        heading = heading,
+        speed = 9f + rng.nextFloat() * 4f,
+        bodyR = col.first,
+        bodyG = col.second,
+        bodyB = col.third,
+        driverRole = DriverRole.CIVILIAN_AI,
+        isTrafficCruiser = true,
+        trafficAxis = axis,
+        trafficDir = dir,
+        trafficRoadCoord = roadLine.pos,
+        turnCooldown = 1.8f + rng.nextFloat() * 2.5f,
+      )
+    )
+  }
+
+  private fun spawnPedestrian(activity: NpcActivity, avoidPlayer: Boolean = false) {
+    var x: Float
+    var z: Float
+    var tx: Float
+    var tz: Float
+    val shirts: List<Triple<Float, Float, Float>>
+
+    when (activity) {
+      NpcActivity.BEACHGOER -> {
+        x = 107f + rng.nextFloat() * 11f
+        z = -105f + rng.nextFloat() * 210f
+        tx = 107f + rng.nextFloat() * 11f
+        tz = (z + (rng.nextFloat() * 24f - 12f)).coerceIn(-115f, 115f)
+        shirts =
+          listOf(
+            Triple(1.0f, 0.35f, 0.62f),
+            Triple(0.10f, 0.90f, 0.94f),
+            Triple(1.0f, 0.84f, 0.25f),
+            Triple(0.98f, 0.50f, 0.28f),
+          )
+      }
+      NpcActivity.JOGGER -> {
+        x = 100.5f + (rng.nextFloat() - 0.5f) * 2f
+        z = -105f + rng.nextFloat() * 210f
+        tx = 100.5f
+        tz = if (z > 0f) -95f else 95f
+        shirts =
+          listOf(
+            Triple(0.20f, 0.95f, 0.62f),
+            Triple(0.0f, 0.92f, 1.0f),
+            Triple(1.0f, 0.28f, 0.56f),
+          )
+      }
+      else -> {
+        val node = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
+        x = node.x + (rng.nextFloat() * 3.2f - 1.6f)
+        z = node.z + (rng.nextFloat() * 3.2f - 1.6f)
+        val target = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
+        tx = target.x
+        tz = target.z
+        shirts =
+          listOf(
+            Triple(1.0f, 0.25f, 0.58f),
+            Triple(0.12f, 0.88f, 0.92f),
+            Triple(1.0f, 0.78f, 0.24f),
+            Triple(0.96f, 0.95f, 0.98f),
+            Triple(0.35f, 0.92f, 0.58f),
+            Triple(0.66f, 0.42f, 0.98f),
+          )
+      }
+    }
+
+    if (avoidPlayer && hypot(x - playerX, z - playerZ) < 18f) {
+      z = -z
+    }
+    val res = CityMap.resolveCircleCollision(x, z, 0.5f)
     val sh = shirts[rng.nextInt(shirts.size)]
-    val target = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
     npcs.add(
       NpcEntity(
         id = nextEntityId++,
         role = NpcRole.CIVILIAN,
-        x = resolved.first,
-        z = resolved.second,
+        x = res.first,
+        z = res.second,
         heading = rng.nextFloat() * 6.28f,
         hp = 60f,
         maxHp = 60f,
         behavior = NpcBehavior.WANDER,
-        targetX = target.x,
-        targetZ = target.z,
+        activity = activity,
+        targetX = tx,
+        targetZ = tz,
         shirtR = sh.first,
         shirtG = sh.second,
         shirtB = sh.third,
-        pantsR = 0.16f + rng.nextFloat() * 0.2f,
-        pantsG = 0.18f + rng.nextFloat() * 0.2f,
-        pantsB = 0.26f + rng.nextFloat() * 0.25f,
+        pantsR = if (activity == NpcActivity.BEACHGOER) 0.85f else 0.16f + rng.nextFloat() * 0.2f,
+        pantsG = if (activity == NpcActivity.BEACHGOER) 0.68f else 0.18f + rng.nextFloat() * 0.2f,
+        pantsB = if (activity == NpcActivity.BEACHGOER) 0.54f else 0.26f + rng.nextFloat() * 0.25f,
       )
     )
+  }
+
+  private fun spawnChattingPair() {
+    val node = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
+    val res1 = CityMap.resolveCircleCollision(node.x - 0.8f, node.z, 0.5f)
+    val res2 = CityMap.resolveCircleCollision(node.x + 0.8f, node.z, 0.5f)
+    npcs.add(
+      NpcEntity(
+        id = nextEntityId++,
+        role = NpcRole.CIVILIAN,
+        x = res1.first,
+        z = res1.second,
+        heading = (PI * 0.5).toFloat(),
+        hp = 60f,
+        maxHp = 60f,
+        behavior = NpcBehavior.WANDER,
+        activity = NpcActivity.CHATTING,
+        targetX = res1.first,
+        targetZ = res1.second,
+        shirtR = 0.96f,
+        shirtG = 0.42f,
+        shirtB = 0.72f,
+        pantsR = 0.18f,
+        pantsG = 0.22f,
+        pantsB = 0.36f,
+      )
+    )
+    npcs.add(
+      NpcEntity(
+        id = nextEntityId++,
+        role = NpcRole.CIVILIAN,
+        x = res2.first,
+        z = res2.second,
+        heading = (-PI * 0.5).toFloat(),
+        hp = 60f,
+        maxHp = 60f,
+        behavior = NpcBehavior.WANDER,
+        activity = NpcActivity.CHATTING,
+        targetX = res2.first,
+        targetZ = res2.second,
+        shirtR = 0.18f,
+        shirtG = 0.88f,
+        shirtB = 0.92f,
+        pantsR = 0.22f,
+        pantsG = 0.20f,
+        pantsB = 0.28f,
+      )
+    )
+  }
+
+  fun switchCharacter() {
+    synchronized(lock) {
+      activeCharacter =
+        if (activeCharacter == PlayableCharacter.JASON) PlayableCharacter.LUCIA
+        else PlayableCharacter.JASON
+      audio.playUiConfirm()
+      saveDirty = true
+    }
   }
 
   fun setPhase(newPhase: GamePhase) {
@@ -352,7 +545,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   fun triggerReload() {
     synchronized(lock) {
       val slot = inventory[activeWeaponIndex]
-      if (slot.type == WeaponType.FISTS || isReloading) return
+      if (slot.type.isMelee || isReloading) return
       if (slot.clipAmmo < slot.type.clipSize && slot.reserveAmmo > 0) {
         isReloading = true
         reloadTimer = slot.type.reloadSec
@@ -369,12 +562,13 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       if (!slot.unlocked) {
         if (cash < type.unlockCost) return false
         cash -= type.unlockCost
-        inventory[idx] = slot.copy(unlocked = true, clipAmmo = type.clipSize, reserveAmmo = type.ammoPackAmount)
+        inventory[idx] =
+          slot.copy(unlocked = true, clipAmmo = type.clipSize, reserveAmmo = type.ammoPackAmount)
         activeWeaponIndex = idx
         audio.playCashPickup()
         saveDirty = true
         return true
-      } else if (type != WeaponType.FISTS && slot.reserveAmmo < type.reserveCap) {
+      } else if (!type.isMelee && slot.reserveAmmo < type.reserveCap) {
         if (cash < type.ammoPackCost) return false
         cash -= type.ammoPackCost
         val newReserve = min(type.reserveCap, slot.reserveAmmo + type.ammoPackAmount)
@@ -405,7 +599,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       if (phase != GamePhase.PLAYING) return
       val currentVId = playerVehicleId
       if (currentVId != null) {
-        // Exit vehicle beside left door
         val v = vehicles.firstOrNull { it.id == currentVId }
         if (v != null) {
           v.driverRole = DriverRole.NONE
@@ -422,21 +615,47 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         return
       }
 
-      // Find nearest non-destroyed vehicle within 4.4m
       val nearest =
         vehicles
           .filter { !it.isDestroyed }
           .minByOrNull { hypot(it.x - playerX, it.z - playerZ) }
-      if (nearest != null && hypot(nearest.x - playerX, nearest.z - playerZ) <= 4.4f) {
+      if (nearest != null && hypot(nearest.x - playerX, nearest.z - playerZ) <= 4.6f) {
         val wasPolice = nearest.type.isPolice
         val wasAi = nearest.driverRole != DriverRole.NONE
+        if (nearest.driverRole == DriverRole.CIVILIAN_AI) {
+          // Yank NPC driver out onto sidewalk and make them flee
+          val ejectX = nearest.x + cos(nearest.heading) * (nearest.type.halfWidth + 1.2f)
+          val ejectZ = nearest.z - sin(nearest.heading) * (nearest.type.halfWidth + 1.2f)
+          val res = CityMap.resolveCircleCollision(ejectX, ejectZ, 0.5f)
+          npcs.add(
+            NpcEntity(
+              id = nextEntityId++,
+              role = NpcRole.CIVILIAN,
+              x = res.first,
+              z = res.second,
+              heading = nearest.heading,
+              hp = 60f,
+              maxHp = 60f,
+              behavior = NpcBehavior.FLEE,
+              activity = NpcActivity.STROLLER,
+              shirtR = 0.95f,
+              shirtG = 0.65f,
+              shirtB = 0.25f,
+              pantsR = 0.18f,
+              pantsG = 0.20f,
+              pantsB = 0.30f,
+            )
+          )
+        }
         nearest.driverRole = DriverRole.PLAYER
+        nearest.isTrafficCruiser = false
+        nearest.isPanicking = false
         playerVehicleId = nearest.id
         playerX = nearest.x
         playerZ = nearest.z
         cameraYaw = nearest.heading
         if (wasPolice || wasAi) {
-          addWantedHeat(if (wasPolice) 35f else 18f)
+          addWantedHeat(if (wasPolice) 35f else 15f)
         }
         audio.inVehicle = true
         audio.playUiConfirm()
@@ -459,7 +678,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       playerZ = CityMap.CLINIC_Z + 4.5f
       playerHeading = 0f
       cameraYaw = 0f
-      // Clear aggressive nearby cops
       npcs.removeAll { it.role != NpcRole.CIVILIAN }
       vehicles.forEach {
         if (it.driverRole == DriverRole.POLICE_AI) {
@@ -502,13 +720,18 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         return
       }
       simTime += dt
+      timeOfDay = (timeOfDay + dt / 110f) % 1.0f
       fireCooldown = (fireCooldown - dt).coerceAtLeast(0f)
       muzzleFlashTimer = (muzzleFlashTimer - dt).coerceAtLeast(0f)
       cameraShake = (cameraShake - dt * 2.8f).coerceAtLeast(0f)
 
+      // Prune old kill feed items
+      killFeed.removeAll { (simTime - it.first) > 4.0f }
+
       updateReload(dt)
       updatePlayerOnFoot(dt)
       updateVehicles(dt)
+      updateRockets(dt)
       updateNpcs(dt)
       updatePoliceDirector(dt)
       updateEffectsAndPickups(dt)
@@ -545,15 +768,13 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     val sy = moveStickY
     val mag = hypot(sx, sy).coerceAtMost(1f)
     if (mag > 0.08f) {
-      val speed = if (isSprinting || mag > 0.82f) 9.8f else 6.0f
-      // Camera-relative movement: forward = (sin(cameraYaw), cos(cameraYaw))
-      // Wait: camera sits behind Jason at (playerX - sin(yaw)*dist, playerZ - cos(yaw)*dist), looking toward +sin,+cos
+      val baseSpeed = if (isSprinting || mag > 0.82f) 9.8f else 6.0f
+      val speed = baseSpeed * activeCharacter.sprintMultiplier
       val fwdX = sin(cameraYaw)
       val fwdZ = cos(cameraYaw)
       val rightX = -cos(cameraYaw)
       val rightZ = sin(cameraYaw)
 
-      // stickY up is negative in Compose screen coords -> invert sy for forward
       val moveX = rightX * sx + fwdX * (-sy)
       val moveZ = rightZ * sx + fwdZ * (-sy)
       val moveLen = hypot(moveX, moveZ).coerceAtLeast(0.001f)
@@ -572,7 +793,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       playerWalkPhase = 0f
     }
 
-    // Clear waypoint if arrived
     val wx = waypointX
     val wz = waypointZ
     if (wx != null && wz != null && hypot(wx - playerX, wz - playerZ) < 6f) {
@@ -589,7 +809,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     val slot = inventory[activeWeaponIndex]
     val weapon = slot.type
 
-    if (weapon != WeaponType.FISTS) {
+    if (!weapon.isMelee) {
       if (slot.clipAmmo <= 0) {
         if (slot.reserveAmmo > 0) {
           triggerReload()
@@ -605,7 +825,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     fireCooldown = weapon.fireIntervalSec
     audio.playWeapon(weapon)
 
-    // Determine aim direction: camera forward, with soft auto-aim toward nearest NPC in cone
     var aimDirX = sin(cameraYaw)
     var aimDirZ = cos(cameraYaw)
     val bestTarget = findAimAssistTarget(aimDirX, aimDirZ, weapon.range)
@@ -618,8 +837,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     }
     playerHeading = atan2(aimDirX, aimDirZ)
 
-    if (weapon == WeaponType.FISTS) {
-      // Melee sweep
+    if (weapon.isMelee) {
       val hitNpc =
         npcs
           .filter { it.behavior != NpcBehavior.DEAD }
@@ -627,22 +845,58 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
             val dx = it.x - playerX
             val dz = it.z - playerZ
             val d = hypot(dx, dz)
-            d <= weapon.range && (dx * aimDirX + dz * aimDirZ) / d.coerceAtLeast(0.01f) > 0.35f
+            d <= weapon.range && (dx * aimDirX + dz * aimDirZ) / d.coerceAtLeast(0.01f) > 0.25f
           }
       if (hitNpc != null) {
-        damageNpc(hitNpc, weapon.damage, aimDirX, aimDirZ)
+        damageNpc(hitNpc, weapon.damage, aimDirX * (if (weapon == WeaponType.BAT) 1.5f else 1f), aimDirZ * (if (weapon == WeaponType.BAT) 1.5f else 1f))
         audio.playImpact()
       }
       return
     }
 
+    if (weapon == WeaponType.DUAL_PISTOLS) {
+      dualLeftShot = !dualLeftShot
+    } else {
+      dualLeftShot = false
+    }
+
     muzzleFlashTimer = 0.065f
-    cameraShake = maxOf(cameraShake, if (weapon == WeaponType.SHOTGUN) 0.35f else 0.14f)
-    alertNearbyCivilians(playerX, playerZ, 26f)
+    cameraShake =
+      maxOf(
+        cameraShake,
+        when (weapon) {
+          WeaponType.RPG -> 0.45f
+          WeaponType.SHOTGUN, WeaponType.SNIPER -> 0.34f
+          else -> 0.14f
+        },
+      )
+    alertNearbyCiviliansAndTraffic(playerX, playerZ, 30f)
     if (wantedStars == 0) addWantedHeat(10f)
 
-    val muzzleX = playerX + aimDirX * 0.7f
-    val muzzleZ = playerZ + aimDirZ * 0.7f
+    if (weapon == WeaponType.RPG) {
+      val spawnX = playerX + aimDirX * 1.1f
+      val spawnZ = playerZ + aimDirZ * 1.1f
+      rockets.add(
+        RocketProjectile(
+          id = nextEntityId++,
+          x = spawnX,
+          y = 1.42f,
+          z = spawnZ,
+          vx = aimDirX * 38f,
+          vy = -0.35f,
+          vz = aimDirZ * 38f,
+          heading = atan2(aimDirX, aimDirZ),
+        )
+      )
+      return
+    }
+
+    val sideOffset =
+      if (weapon == WeaponType.DUAL_PISTOLS) (if (dualLeftShot) -0.38f else 0.38f) else 0.32f
+    val rightX = cos(playerHeading)
+    val rightZ = -sin(playerHeading)
+    val muzzleX = playerX + aimDirX * 0.72f + rightX * sideOffset
+    val muzzleZ = playerZ + aimDirZ * 0.72f + rightZ * sideOffset
     val baseAngle = atan2(aimDirX, aimDirZ)
 
     repeat(weapon.pellets) {
@@ -656,7 +910,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
 
       for (npc in npcs) {
         if (npc.behavior == NpcBehavior.DEAD) continue
-        val t = rayCircleIntersect(muzzleX, muzzleZ, dx, dz, npc.x, npc.z, 0.72f)
+        val t = rayCircleIntersect(muzzleX, muzzleZ, dx, dz, npc.x, npc.z, 0.74f)
         if (t != null && t in 0f..bestNpcT) {
           bestNpcT = t
           closestNpc = npc
@@ -667,7 +921,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       var bestVehT = bestNpcT
       for (v in vehicles) {
         if (v.isDestroyed) continue
-        val t = rayCircleIntersect(muzzleX, muzzleZ, dx, dz, v.x, v.z, v.type.halfWidth + 0.4f)
+        val t = rayCircleIntersect(muzzleX, muzzleZ, dx, dz, v.x, v.z, v.type.halfWidth + 0.45f)
         if (t != null && t in 0f..bestVehT) {
           bestVehT = t
           closestVeh = v
@@ -677,7 +931,8 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       val hitT =
         when {
           closestVeh != null -> {
-            damageVehicle(closestVeh, weapon.damage * 0.65f)
+            damageVehicle(closestVeh, weapon.damage * 0.70f)
+            emitHitmarker(isKill = closestVeh.isDestroyed)
             bestVehT
           }
           closestNpc != null -> {
@@ -687,6 +942,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           else -> wallDist
         }
 
+      val isSniper = weapon == WeaponType.SNIPER
       tracers.add(
         ProjectileTracer(
           x1 = muzzleX,
@@ -695,14 +951,102 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           x2 = muzzleX + dx * hitT,
           y2 = 1.25f,
           z2 = muzzleZ + dz * hitT,
-          ttl = 0.08f,
-          maxTtl = 0.08f,
-          r = 1.0f,
-          g = 0.86f,
-          b = 0.25f,
+          ttl = if (isSniper) 0.16f else 0.08f,
+          maxTtl = if (isSniper) 0.16f else 0.08f,
+          r = if (isSniper) 0.15f else 1.0f,
+          g = if (isSniper) 0.95f else 0.86f,
+          b = if (isSniper) 1.0f else 0.25f,
+          thickness = if (isSniper) 0.12f else 0.08f,
         )
       )
     }
+  }
+
+  private fun updateRockets(dt: Float) {
+    val iter = rockets.iterator()
+    while (iter.hasNext()) {
+      val r = iter.next()
+      r.ttl -= dt
+      val nx = r.x + r.vx * dt
+      val ny = r.y + r.vy * dt
+      val nz = r.z + r.vz * dt
+
+      r.smokeAccum += dt
+      if (r.smokeAccum >= 0.025f) {
+        r.smokeAccum = 0f
+        addSmokeParticle(r.x, r.y, r.z, 0.35f, 0.88f)
+      }
+
+      var hit = r.ttl <= 0f || ny <= 0.15f
+      if (!hit) {
+        for (b in CityMap.buildings) {
+          if (nx in b.minX..b.maxX && nz in b.minZ..b.maxZ) {
+            hit = true
+            break
+          }
+        }
+      }
+      if (!hit) {
+        hit =
+          npcs.any { it.behavior != NpcBehavior.DEAD && hypot(it.x - nx, it.z - nz) < 1.1f } ||
+            vehicles.any {
+              !it.isDestroyed && it.id != playerVehicleId && hypot(it.x - nx, it.z - nz) < it.type.halfWidth + 0.8f
+            }
+      }
+
+      r.x = nx
+      r.y = ny
+      r.z = nz
+
+      if (hit) {
+        detonateRocket(r.x, r.y.coerceAtLeast(0.4f), r.z)
+        iter.remove()
+      }
+    }
+  }
+
+  private fun detonateRocket(ex: Float, ey: Float, ez: Float) {
+    explosions.add(ExplosionEffect(ex, ey, ez))
+    audio.playExplosion()
+    cameraShake = 0.85f
+    addWantedHeat(65f)
+    repeat(12) {
+      addSmokeParticle(
+        ex + (rng.nextFloat() - 0.5f) * 2.5f,
+        ey + rng.nextFloat() * 1.5f,
+        ez + (rng.nextFloat() - 0.5f) * 2.5f,
+        0.75f,
+        0.22f,
+      )
+    }
+
+    val blastRadius = 9.5f
+    for (npc in npcs) {
+      if (npc.behavior == NpcBehavior.DEAD) continue
+      val dx = npc.x - ex
+      val dz = npc.z - ez
+      val dist = hypot(dx, dz)
+      if (dist <= blastRadius) {
+        val falloff = 1f - (dist / blastRadius) * 0.65f
+        val dirX = dx / dist.coerceAtLeast(0.1f)
+        val dirZ = dz / dist.coerceAtLeast(0.1f)
+        damageNpc(npc, 180f * falloff, dirX * 2.2f, dirZ * 2.2f)
+      }
+    }
+
+    for (v in vehicles) {
+      if (v.isDestroyed) continue
+      val dist = hypot(v.x - ex, v.z - ez)
+      if (dist <= blastRadius) {
+        val falloff = 1f - (dist / blastRadius) * 0.5f
+        damageVehicle(v, 220f * falloff)
+      }
+    }
+  }
+
+  private fun emitHitmarker(isKill: Boolean) {
+    eventCounter++
+    latestHitmarker = HitmarkerEvent(eventCounter, isKill)
   }
 
   private fun findAimAssistTarget(fwdX: Float, fwdZ: Float, range: Float): NpcEntity? {
@@ -733,8 +1077,10 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     npc.vx = dirX * 4.5f
     npc.vz = dirZ * 4.5f
 
-    // Spawn 3D Blood Particle spray!
-    val pCount = if (npc.hp <= 0f) 14 else 7
+    val killed = npc.hp <= 0f
+    emitHitmarker(isKill = killed)
+
+    val pCount = if (killed) 14 else 7
     repeat(pCount) {
       bloodParticles.add(
         BloodParticle(
@@ -750,26 +1096,34 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       )
     }
 
-    // Spawn ground blood splatter decal immediately on hit
-    addBloodDecal(npc.x + dirX * 0.35f, npc.z + dirZ * 0.35f, if (npc.hp <= 0f) 1.35f else 0.65f)
+    addBloodDecal(npc.x + dirX * 0.35f, npc.z + dirZ * 0.35f, if (killed) 1.35f else 0.65f)
 
     if (npc.role == NpcRole.CIVILIAN) {
-      addWantedHeat(if (npc.hp <= 0f) 32f else 14f)
+      addWantedHeat(if (killed) 32f else 14f)
     } else {
-      addWantedHeat(if (npc.hp <= 0f) 55f else 25f)
+      addWantedHeat(if (killed) 55f else 25f)
     }
 
-    if (npc.hp <= 0f) {
+    if (killed) {
       npc.behavior = NpcBehavior.DEAD
       npc.deadTimer = 6.5f
       totalEliminations++
-      // Drop rotating glowing 3D cash bundle(s)
       val dropAmount =
         when (npc.role) {
           NpcRole.CIVILIAN -> 20 + rng.nextInt(55)
           NpcRole.PATROL_COP -> 45 + rng.nextInt(60)
-          NpcRole.SWAT -> 80 + rng.nextInt(80)
+          NpcRole.SWAT -> 85 + rng.nextInt(90)
         }
+      val label =
+        when (npc.role) {
+          NpcRole.CIVILIAN -> "CITIZEN"
+          NpcRole.PATROL_COP -> "VCPD OFFICER"
+          NpcRole.SWAT -> "SWAT UNIT"
+        }
+      eventCounter++
+      killFeed.add(0, simTime to KillFeedItem(eventCounter, label, dropAmount))
+      if (killFeed.size > 3) killFeed.removeAt(killFeed.lastIndex)
+
       cashPickups.add(
         CashPickup(
           id = nextEntityId++,
@@ -779,9 +1133,10 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           bobPhase = rng.nextFloat() * 6.28f,
         )
       )
-      // Cops also replenish small pistol/carbine reserve on kill
       if (npc.role != NpcRole.CIVILIAN) {
-        val targetSlotIdx = if (npc.role == NpcRole.SWAT) 4 else 1
+        val targetSlotIdx =
+          if (npc.role == NpcRole.SWAT) WeaponType.entries.indexOf(WeaponType.CARBINE)
+          else WeaponType.entries.indexOf(WeaponType.PISTOL)
         val s = inventory[targetSlotIdx]
         if (s.unlocked) {
           inventory[targetSlotIdx] =
@@ -795,7 +1150,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   }
 
   private fun addBloodDecal(x: Float, z: Float, targetR: Float) {
-    if (bloodDecals.size >= 85) {
+    if (bloodDecals.size >= 95) {
       bloodDecals.removeAt(0)
     }
     bloodDecals.add(
@@ -809,6 +1164,40 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     )
   }
 
+  private fun addTireSkid(x: Float, z: Float, heading: Float) {
+    if (skidDecals.size >= 130) {
+      skidDecals.removeAt(0)
+    }
+    skidDecals.add(
+      TireSkidDecal(
+        x = x,
+        z = z,
+        headingDeg = Math.toDegrees(heading.toDouble()).toFloat(),
+        length = 0.95f,
+      )
+    )
+  }
+
+  private fun addSmokeParticle(x: Float, y: Float, z: Float, size: Float, shade: Float) {
+    if (smokeParticles.size >= 95) {
+      smokeParticles.removeAt(0)
+    }
+    smokeParticles.add(
+      SmokeParticle(
+        x = x,
+        y = y,
+        z = z,
+        vx = (rng.nextFloat() - 0.5f) * 0.8f,
+        vy = 1.1f + rng.nextFloat() * 1.2f,
+        vz = (rng.nextFloat() - 0.5f) * 0.8f,
+        ttl = 0.65f,
+        maxTtl = 0.65f,
+        size = size,
+        shade = shade,
+      )
+    )
+  }
+
   private fun damageVehicle(v: VehicleEntity, dmg: Float) {
     if (v.isDestroyed) return
     v.hp -= dmg
@@ -818,6 +1207,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       v.isDestroyed = true
       v.speed = 0f
       v.sirenActive = false
+      v.driverRole = DriverRole.NONE
       explosions.add(ExplosionEffect(v.x, 1.0f, v.z))
       audio.playExplosion()
       cameraShake = 0.75f
@@ -832,8 +1222,13 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   }
 
   private fun updateVehicles(dt: Float) {
+    var activeTrafficCount = 0
+
     for (v in vehicles) {
       if (v.isDestroyed) continue
+      if (v.driverRole == DriverRole.CIVILIAN_AI && v.isTrafficCruiser) {
+        activeTrafficCount++
+      }
 
       when (v.driverRole) {
         DriverRole.PLAYER -> {
@@ -847,7 +1242,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
               v.speed += v.type.accel * 0.55f * accelInput * dt
             }
           } else {
-            // Rolling drag
             v.speed *= (1f - 1.6f * dt).coerceAtLeast(0f)
           }
           if (driveDrift) {
@@ -857,8 +1251,25 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           v.steerInput = driveSteer
           val steerFactor = (abs(v.speed) / 7f).coerceIn(0f, 1f) * if (v.speed >= 0f) 1f else -1f
           val driftMult = if (driveDrift) 1.45f else 1f
-          // Screen steer right -> negative heading delta in right-handed XZ with +sin/+cos forward
           v.heading -= driveSteer * v.type.turnRate * steerFactor * driftMult * dt
+
+          // Emit Drift Tire Marks behind rear wheels!
+          v.skidTimer -= dt
+          if ((driveDrift || (driveBrake > 0.5f && v.speed > 9f)) && abs(v.speed) > 6.5f && v.skidTimer <= 0f) {
+            v.skidTimer = 0.045f
+            val fwdX = sin(v.heading)
+            val fwdZ = cos(v.heading)
+            val rightX = cos(v.heading)
+            val rightZ = -sin(v.heading)
+            val rearX = v.x - fwdX * (v.type.halfLength * 0.68f)
+            val rearZ = v.z - fwdZ * (v.type.halfLength * 0.68f)
+            addTireSkid(rearX - rightX * (v.type.halfWidth * 0.85f), rearZ - rightZ * (v.type.halfWidth * 0.85f), v.heading)
+            addTireSkid(rearX + rightX * (v.type.halfWidth * 0.85f), rearZ + rightZ * (v.type.halfWidth * 0.85f), v.heading)
+          }
+        }
+
+        DriverRole.CIVILIAN_AI -> {
+          updateTrafficVehicle(v, dt)
         }
 
         DriverRole.POLICE_AI -> {
@@ -875,14 +1286,31 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           v.heading += v.steerInput * v.type.turnRate * dt
           val targetSpeed =
             if (dist > 14f) v.type.maxSpeed * 0.88f
-            else if (playerVehicleId != null) v.type.maxSpeed * 0.92f // Ram player's car!
+            else if (playerVehicleId != null) v.type.maxSpeed * 0.92f
             else 14f
           v.speed += (targetSpeed - v.speed).coerceIn(-v.type.accel * dt, v.type.accel * dt)
         }
 
-        else -> {
+        DriverRole.NONE -> {
           v.speed *= (1f - 2.5f * dt).coerceAtLeast(0f)
           v.steerInput = 0f
+        }
+      }
+
+      // Exhaust & Damaged Engine Smoke Puffs
+      v.exhaustTimer -= dt
+      if (v.exhaustTimer <= 0f) {
+        val damaged = v.hp < v.type.maxHp * 0.45f
+        if (damaged) {
+          v.exhaustTimer = 0.09f
+          val hoodX = v.x + sin(v.heading) * (v.type.halfLength * 0.65f)
+          val hoodZ = v.z + cos(v.heading) * (v.type.halfLength * 0.65f)
+          addSmokeParticle(hoodX, 1.05f, hoodZ, 0.42f, 0.16f)
+        } else if (v.driverRole != DriverRole.NONE && abs(v.speed) > 4f) {
+          v.exhaustTimer = 0.14f
+          val tailX = v.x - sin(v.heading) * (v.type.halfLength + 0.15f)
+          val tailZ = v.z - cos(v.heading) * (v.type.halfLength + 0.15f)
+          addSmokeParticle(tailX, 0.32f, tailZ, 0.22f, 0.72f)
         }
       }
 
@@ -955,6 +1383,120 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         }
       }
     }
+
+    if (activeTrafficCount < 10 && rng.nextFloat() < 0.06f) {
+      spawnTrafficVehicle(preferCruiser = false)
+    }
+  }
+
+  private fun updateTrafficVehicle(v: VehicleEntity, dt: Float) {
+    v.turnCooldown = (v.turnCooldown - dt).coerceAtLeast(0f)
+    v.hornCooldown = (v.hornCooldown - dt).coerceAtLeast(0f)
+    val laneOffset = 3.0f
+
+    // Determine desired lane position and heading
+    val desiredHeading: Float
+    val laneError: Float
+    if (v.trafficAxis == 0) {
+      desiredHeading = if (v.trafficDir > 0) 0f else PI.toFloat()
+      val targetLaneX = v.trafficRoadCoord - v.trafficDir * laneOffset
+      laneError = targetLaneX - v.x
+      // U-turn at north/south ends
+      if (v.z > 125f && v.trafficDir > 0) {
+        v.trafficDir = -1
+        v.turnCooldown = 2.0f
+      } else if (v.z < -125f && v.trafficDir < 0) {
+        v.trafficDir = 1
+        v.turnCooldown = 2.0f
+      } else if (v.turnCooldown <= 0f) {
+        val cross = CityMap.horizontalRoads.firstOrNull { abs(v.z - it.pos) < 1.8f }
+        if (cross != null && rng.nextFloat() < 0.40f) {
+          v.trafficAxis = 1
+          v.trafficRoadCoord = cross.pos
+          v.trafficDir = if (rng.nextBoolean()) 1 else -1
+          v.turnCooldown = 2.8f
+        }
+      }
+    } else {
+      desiredHeading = if (v.trafficDir > 0) (PI * 0.5).toFloat() else (-PI * 0.5).toFloat()
+      val targetLaneZ = v.trafficRoadCoord + v.trafficDir * laneOffset
+      laneError = targetLaneZ - v.z
+      if (v.x > 88f && v.trafficDir > 0) {
+        v.trafficDir = -1
+        v.turnCooldown = 2.0f
+      } else if (v.x < -125f && v.trafficDir < 0) {
+        v.trafficDir = 1
+        v.turnCooldown = 2.0f
+      } else if (v.turnCooldown <= 0f) {
+        val cross = CityMap.verticalRoads.firstOrNull { abs(v.x - it.pos) < 1.8f }
+        if (cross != null && rng.nextFloat() < 0.40f) {
+          v.trafficAxis = 0
+          v.trafficRoadCoord = cross.pos
+          v.trafficDir = if (rng.nextBoolean()) 1 else -1
+          v.turnCooldown = 2.8f
+        }
+      }
+    }
+
+    val steerAdjust = (laneError * 0.14f * v.trafficDir).coerceIn(-0.45f, 0.45f)
+    var angleDiff = (desiredHeading + steerAdjust) - v.heading
+    while (angleDiff > PI) angleDiff -= (2 * PI).toFloat()
+    while (angleDiff < -PI) angleDiff += (2 * PI).toFloat()
+    v.heading += (angleDiff * 3.8f).coerceIn(-2.2f, 2.2f) * dt
+
+    // Forward obstacle check (other cars, player, pedestrians)
+    val fwdX = sin(v.heading)
+    val fwdZ = cos(v.heading)
+    var blocked = false
+    var blockedByPlayer = false
+
+    val pDx = playerX - v.x
+    val pDz = playerZ - v.z
+    val pDist = hypot(pDx, pDz)
+    if (pDist < 9.5f && (pDx * fwdX + pDz * fwdZ) / pDist.coerceAtLeast(0.01f) > 0.78f) {
+      blocked = true
+      blockedByPlayer = true
+    }
+
+    if (!blocked) {
+      for (other in vehicles) {
+        if (other.id == v.id || other.isDestroyed) continue
+        val dx = other.x - v.x
+        val dz = other.z - v.z
+        val d = hypot(dx, dz)
+        if (d < 9.5f && (dx * fwdX + dz * fwdZ) / d.coerceAtLeast(0.01f) > 0.80f) {
+          blocked = true
+          break
+        }
+      }
+    }
+
+    if (!blocked && !v.isPanicking) {
+      for (npc in npcs) {
+        if (npc.behavior == NpcBehavior.DEAD) continue
+        val dx = npc.x - v.x
+        val dz = npc.z - v.z
+        val d = hypot(dx, dz)
+        if (d < 6.5f && (dx * fwdX + dz * fwdZ) / d.coerceAtLeast(0.01f) > 0.82f) {
+          blocked = true
+          break
+        }
+      }
+    }
+
+    if (blockedByPlayer && v.hornCooldown <= 0f) {
+      v.hornCooldown = 2.6f
+      audio.playHorn()
+    }
+
+    val cruiseTarget =
+      when {
+        blocked -> 0f
+        v.isPanicking -> v.type.maxSpeed * 0.82f
+        else -> 11.5f
+      }
+    val rate = if (blocked) v.type.accel * 1.4f else v.type.accel * 0.65f
+    v.speed += (cruiseTarget - v.speed).coerceIn(-rate * dt, rate * dt)
   }
 
   private fun updateNpcs(dt: Float) {
@@ -974,7 +1516,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         continue
       }
 
-      // Apply knockback velocity decay
       if (abs(npc.vx) > 0.05f || abs(npc.vz) > 0.05f) {
         val res = CityMap.resolveCircleCollision(npc.x + npc.vx * dt, npc.z + npc.vz * dt, 0.45f)
         npc.x = res.first
@@ -990,20 +1531,36 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           val dx = npc.x - playerX
           val dz = npc.z - playerZ
           val d = hypot(dx, dz).coerceAtLeast(0.01f)
-          moveNpcToward(npc, npc.x + (dx / d) * 10f, npc.z + (dz / d) * 10f, 5.2f, dt)
+          moveNpcToward(npc, npc.x + (dx / d) * 10f, npc.z + (dz / d) * 10f, 5.4f, dt)
           if (distToPlayer > 42f) {
             npc.behavior = NpcBehavior.WANDER
           }
+        } else if (npc.activity == NpcActivity.CHATTING) {
+          // Subtle idle sway while chatting
+          npc.walkPhase = sin(simTime * 2f + npc.id) * 0.15f
         } else {
           if (hypot(npc.targetX - npc.x, npc.targetZ - npc.z) < 2.2f) {
-            val next = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
-            npc.targetX = next.x
-            npc.targetZ = next.z
+            if (npc.activity == NpcActivity.BEACHGOER) {
+              npc.targetX = 107f + rng.nextFloat() * 11f
+              npc.targetZ = (npc.z + (rng.nextFloat() * 30f - 15f)).coerceIn(-115f, 115f)
+            } else if (npc.activity == NpcActivity.JOGGER) {
+              npc.targetX = 100.5f
+              npc.targetZ = if (npc.z > 0f) -95f else 95f
+            } else {
+              val next = CityMap.sidewalkWalkNodes[rng.nextInt(CityMap.sidewalkWalkNodes.size)]
+              npc.targetX = next.x
+              npc.targetZ = next.z
+            }
           }
-          moveNpcToward(npc, npc.targetX, npc.targetZ, 2.3f, dt)
+          val walkSpeed =
+            when (npc.activity) {
+              NpcActivity.JOGGER -> 4.2f
+              NpcActivity.BEACHGOER -> 1.6f
+              else -> 2.3f
+            }
+          moveNpcToward(npc, npc.targetX, npc.targetZ, walkSpeed, dt)
         }
       } else {
-        // Police / SWAT AI
         if (wantedStars == 0) {
           iter.remove()
           continue
@@ -1052,13 +1609,17 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       }
     }
 
-    // Keep civilian crowd populated around 20-22
     val civCount = npcs.count { it.role == NpcRole.CIVILIAN }
-    if (civCount < 20) {
-      spawnCivilian(nearPlayer = true)
+    if (civCount < 23) {
+      val act =
+        when (rng.nextInt(4)) {
+          0 -> NpcActivity.JOGGER
+          1 -> NpcActivity.BEACHGOER
+          else -> NpcActivity.STROLLER
+        }
+      spawnPedestrian(act, avoidPlayer = true)
     }
 
-    // Police vision & busted check
     val activePoliceCars =
       vehicles.count { it.driverRole == DriverRole.POLICE_AI && hypot(it.x - playerX, it.z - playerZ) < 38f }
     if (copCanSeePlayer || activePoliceCars > 0) {
@@ -1164,12 +1725,8 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     val curSwat = npcs.count { it.role == NpcRole.SWAT && it.behavior != NpcBehavior.DEAD }
     val curCruisers = vehicles.count { it.driverRole == DriverRole.POLICE_AI && !it.isDestroyed }
 
-    if (curCops < desiredCops) {
-      spawnPoliceUnit(NpcRole.PATROL_COP)
-    }
-    if (curSwat < desiredSwat) {
-      spawnPoliceUnit(NpcRole.SWAT)
-    }
+    if (curCops < desiredCops) spawnPoliceUnit(NpcRole.PATROL_COP)
+    if (curSwat < desiredSwat) spawnPoliceUnit(NpcRole.SWAT)
     if (curCruisers < desiredCruisers) {
       spawnPoliceVehicle(useSwat = wantedStars >= 4 && curCruisers >= 1)
     }
@@ -1206,7 +1763,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   }
 
   private fun spawnPoliceVehicle(useSwat: Boolean) {
-    // Pick a road intersection 40-75m away
     val candidate =
       CityMap.roadNodes
         .filter { hypot(it.x - playerX, it.z - playerZ) in 32f..85f }
@@ -1245,7 +1801,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
   }
 
   private fun updateEffectsAndPickups(dt: Float) {
-    // Blood particles gravity & ground settle
     val bpIter = bloodParticles.iterator()
     while (bpIter.hasNext()) {
       val p = bpIter.next()
@@ -1266,7 +1821,19 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       }
     }
 
-    // Expanding ground blood pools
+    val spIter = smokeParticles.iterator()
+    while (spIter.hasNext()) {
+      val s = spIter.next()
+      s.ttl -= dt
+      if (s.ttl <= 0f) {
+        spIter.remove()
+        continue
+      }
+      s.x += s.vx * dt
+      s.y += s.vy * dt
+      s.z += s.vz * dt
+    }
+
     val bdIter = bloodDecals.iterator()
     while (bdIter.hasNext()) {
       val d = bdIter.next()
@@ -1275,7 +1842,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       }
     }
 
-    // Cash pickups (magnetic pull + collection)
     val cIter = cashPickups.iterator()
     while (cIter.hasNext()) {
       val c = cIter.next()
@@ -1295,15 +1861,14 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       if (dist < 1.65f) {
         cash += c.amount
         totalEarned += c.amount
-        popupCounter++
-        latestCashPopup = CashPopup(popupCounter, c.amount)
+        eventCounter++
+        latestCashPopup = CashPopup(eventCounter, c.amount)
         audio.playCashPickup()
         saveDirty = true
         cIter.remove()
       }
     }
 
-    // Bullet tracers
     val tIter = tracers.iterator()
     while (tIter.hasNext()) {
       val t = tIter.next()
@@ -1311,7 +1876,6 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
       if (t.ttl <= 0f) tIter.remove()
     }
 
-    // Explosions
     val eIter = explosions.iterator()
     while (eIter.hasNext()) {
       val e = eIter.next()
@@ -1320,12 +1884,17 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     }
   }
 
-  private fun alertNearbyCivilians(ox: Float, oz: Float, radius: Float) {
+  private fun alertNearbyCiviliansAndTraffic(ox: Float, oz: Float, radius: Float) {
     for (npc in npcs) {
       if (npc.role == NpcRole.CIVILIAN && npc.behavior != NpcBehavior.DEAD) {
         if (hypot(npc.x - ox, npc.z - oz) < radius) {
           npc.behavior = NpcBehavior.FLEE
         }
+      }
+    }
+    for (v in vehicles) {
+      if (v.driverRole == DriverRole.CIVILIAN_AI && hypot(v.x - ox, v.z - oz) < radius) {
+        v.isPanicking = true
       }
     }
   }
@@ -1371,6 +1940,8 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
     synchronized(lock) {
       return RenderSnapshot(
         timeSec = simTime,
+        timeOfDay = timeOfDay,
+        activeCharacter = activeCharacter,
         playerX = playerX,
         playerZ = playerZ,
         playerHeading = playerHeading,
@@ -1379,6 +1950,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         playerInVehicleId = playerVehicleId,
         activeWeapon = inventory[activeWeaponIndex].type,
         muzzleFlashTimer = muzzleFlashTimer,
+        dualLeftMuzzle = dualLeftShot,
         cameraYaw = cameraYaw,
         cameraPitch = cameraPitch,
         cameraShake = cameraShake,
@@ -1387,9 +1959,12 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         vehicles = vehicles.map { it.copy() },
         npcs = npcs.map { it.copy() },
         bloodDecals = bloodDecals.map { it.copy() },
+        skidDecals = skidDecals.map { it.copy() },
         bloodParticles = bloodParticles.map { it.copy() },
+        smokeParticles = smokeParticles.map { it.copy() },
         cashPickups = cashPickups.map { it.copy() },
         tracers = tracers.map { it.copy() },
+        rockets = rockets.map { it.copy() },
         explosions = explosions.map { it.copy() },
       )
     }
@@ -1404,7 +1979,7 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
           vehicles
             .filter { !it.isDestroyed }
             .minByOrNull { hypot(it.x - playerX, it.z - playerZ) }
-            ?.takeIf { hypot(it.x - playerX, it.z - playerZ) <= 4.4f }
+            ?.takeIf { hypot(it.x - playerX, it.z - playerZ) <= 4.6f }
         } else null
 
       val blips = mutableListOf<RadarBlip>()
@@ -1434,7 +2009,9 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
 
       return GameHudState(
         phase = phase,
+        activeCharacter = activeCharacter,
         districtName = CityMap.districtAt(playerX, playerZ),
+        timeOfDay = timeOfDay,
         health = playerHp.toInt(),
         maxHealth = 100,
         armor = playerArmor.toInt(),
@@ -1468,6 +2045,8 @@ class ViceGameEngine(private val audio: ViceAudioEngine) {
         totalEarned = totalEarned,
         highestWanted = highestWanted,
         latestCashPopup = latestCashPopup,
+        latestHitmarker = latestHitmarker,
+        killFeed = killFeed.map { it.second },
         lastPenaltyPaid = lastPenaltyPaid,
       )
     }

@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.game.model.PlayableCharacter
 import com.example.game.model.RadioStation
 import com.example.game.model.WeaponInventorySlot
 import com.example.game.model.WeaponType
@@ -17,6 +18,7 @@ private val Context.viceDataStore: DataStore<Preferences> by preferencesDataStor
 
 data class SavedSandboxState(
   val hasSave: Boolean,
+  val activeCharacter: PlayableCharacter,
   val cash: Int,
   val armor: Int,
   val totalEliminations: Int,
@@ -31,6 +33,7 @@ class SandboxSaveRepository(private val context: Context) {
 
   private object Keys {
     val HAS_SAVE = booleanPreferencesKey("has_save")
+    val CHARACTER = stringPreferencesKey("active_character")
     val CASH = intPreferencesKey("cash")
     val ARMOR = intPreferencesKey("armor")
     val KILLS = intPreferencesKey("total_kills")
@@ -57,7 +60,7 @@ class SandboxSaveRepository(private val context: Context) {
       WeaponType.entries.map { w ->
         val unlocked = w == WeaponType.FISTS || w == WeaponType.PISTOL || w.id in unlockedSet
         val defaultClip = if (w == WeaponType.PISTOL) w.clipSize else 0
-        val defaultReserve = if (w == WeaponType.PISTOL) 48 else 0
+        val defaultReserve = if (w == WeaponType.PISTOL) 60 else 0
         WeaponInventorySlot(
           type = w,
           unlocked = unlocked,
@@ -67,8 +70,11 @@ class SandboxSaveRepository(private val context: Context) {
       }
     val radioName = prefs[Keys.RADIO] ?: RadioStation.WAVE_103.name
     val radio = RadioStation.entries.firstOrNull { it.name == radioName } ?: RadioStation.WAVE_103
+    val charName = prefs[Keys.CHARACTER] ?: PlayableCharacter.JASON.name
+    val character = PlayableCharacter.entries.firstOrNull { it.name == charName } ?: PlayableCharacter.JASON
     return SavedSandboxState(
       hasSave = true,
+      activeCharacter = character,
       cash = prefs[Keys.CASH] ?: 350,
       armor = prefs[Keys.ARMOR] ?: 25,
       totalEliminations = prefs[Keys.KILLS] ?: 0,
@@ -81,6 +87,7 @@ class SandboxSaveRepository(private val context: Context) {
   }
 
   suspend fun save(
+    activeCharacter: PlayableCharacter,
     cash: Int,
     armor: Int,
     totalEliminations: Int,
@@ -92,6 +99,7 @@ class SandboxSaveRepository(private val context: Context) {
   ) {
     context.viceDataStore.edit { prefs ->
       prefs[Keys.HAS_SAVE] = true
+      prefs[Keys.CHARACTER] = activeCharacter.name
       prefs[Keys.CASH] = cash
       prefs[Keys.ARMOR] = armor
       prefs[Keys.KILLS] = totalEliminations
@@ -126,6 +134,7 @@ class SandboxSaveRepository(private val context: Context) {
         }
       return SavedSandboxState(
         hasSave = false,
+        activeCharacter = PlayableCharacter.JASON,
         cash = 350,
         armor = 25,
         totalEliminations = 0,

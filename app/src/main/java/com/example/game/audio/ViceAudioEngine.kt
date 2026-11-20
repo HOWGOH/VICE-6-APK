@@ -65,8 +65,12 @@ class ViceAudioEngine {
     when (type) {
       WeaponType.FISTS ->
         voices.add(Voice(0f, 0.11f, 160f, 55f, 0.45f, 0.45f))
-      WeaponType.PISTOL ->
-        voices.add(Voice(0f, 0.16f, 620f, 110f, 0.72f, 0.55f))
+      WeaponType.BAT -> {
+        voices.add(Voice(0f, 0.14f, 340f, 85f, 0.35f, 0.58f, harmonic = true))
+        voices.add(Voice(0f, 0.08f, 1200f, 400f, 0.50f, 0.25f))
+      }
+      WeaponType.PISTOL, WeaponType.DUAL_PISTOLS ->
+        voices.add(Voice(0f, 0.15f, 640f, 115f, 0.72f, 0.52f))
       WeaponType.SMG ->
         voices.add(Voice(0f, 0.09f, 780f, 180f, 0.68f, 0.42f))
       WeaponType.SHOTGUN -> {
@@ -75,7 +79,21 @@ class ViceAudioEngine {
       }
       WeaponType.CARBINE ->
         voices.add(Voice(0f, 0.14f, 680f, 140f, 0.65f, 0.50f))
+      WeaponType.SNIPER -> {
+        voices.add(Voice(0f, 0.32f, 950f, 95f, 0.78f, 0.75f))
+        voices.add(Voice(0f, 0.22f, 220f, 45f, 0.45f, 0.55f))
+      }
+      WeaponType.RPG -> {
+        voices.add(Voice(0f, 0.42f, 240f, 480f, 0.82f, 0.60f))
+        voices.add(Voice(0f, 0.18f, 140f, 60f, 0.50f, 0.50f))
+      }
     }
+  }
+
+  fun playHorn() {
+    if (isMuted) return
+    voices.add(Voice(0f, 0.16f, 392f, 392f, 0.0f, 0.22f, harmonic = true))
+    voices.add(Voice(0f, 0.16f, 494f, 494f, 0.0f, 0.18f, harmonic = true))
   }
 
   fun playCashPickup() {
@@ -91,7 +109,7 @@ class ViceAudioEngine {
 
   fun playExplosion() {
     if (isMuted) return
-    voices.add(Voice(0f, 0.65f, 140f, 28f, 0.92f, 0.85f))
+    voices.add(Voice(0f, 0.72f, 140f, 24f, 0.92f, 0.90f))
   }
 
   fun playUiConfirm() {
@@ -163,7 +181,6 @@ class ViceAudioEngine {
         }
         var sample = 0f
 
-        // 1. Triggered SFX Voices
         if (voices.isNotEmpty()) {
           val iter = voices.iterator()
           while (iter.hasNext()) {
@@ -185,7 +202,6 @@ class ViceAudioEngine {
           }
         }
 
-        // 2. Engine Hum when driving
         if (activeInCar) {
           val engFreq = 46f + speedNorm * 95f
           enginePhase += engFreq * dt
@@ -195,7 +211,6 @@ class ViceAudioEngine {
           sample += (saw * 0.35f + sub * 0.65f) * (0.06f + speedNorm * 0.08f)
         }
 
-        // 3. Police Siren wail
         if (siren) {
           val wail = 0.5f + 0.5f * sin(2.0 * PI * 1.45 * radioTime).toFloat()
           val sirenFreq = 590f + wail * 360f
@@ -205,7 +220,6 @@ class ViceAudioEngine {
           sample += sq * 0.065f
         }
 
-        // 4. Procedural Vice Car Radio Stations (active while driving)
         radioTime += dt
         if (activeInCar && station != RadioStation.OFF) {
           val bpm =
@@ -237,7 +251,6 @@ class ViceAudioEngine {
           val bassWave = (radioBassPhase * 2f - 1f) * 0.055f * bassEnv
           val leadEnv = if (step % 2 == 0) (1f - stepFrac) else 0.25f * (1f - stepFrac)
           val leadWave = sin(2.0 * PI * radioLeadPhase).toFloat() * 0.045f * leadEnv
-          // Kick on quarter beats
           val beatFrac = (radioTime % beatSec) / beatSec
           val kick =
             if (beatFrac < 0.14f) {

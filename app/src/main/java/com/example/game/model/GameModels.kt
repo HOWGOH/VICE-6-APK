@@ -2,6 +2,16 @@ package com.example.game.model
 
 import androidx.compose.runtime.Immutable
 
+enum class PlayableCharacter(
+  val displayName: String,
+  val shortTag: String,
+  val sprintMultiplier: Float,
+  val accentHex: Long,
+) {
+  JASON("Jason Duval", "JASON", 1.00f, 0xFF00F0FF),
+  LUCIA("Lucia Caminos", "LUCIA", 1.10f, 0xFFFF2E93),
+}
+
 enum class WeaponType(
   val id: String,
   val displayName: String,
@@ -18,6 +28,7 @@ enum class WeaponType(
   val ammoPackCost: Int,
   val ammoPackAmount: Int,
   val accentHex: Long,
+  val isMelee: Boolean = false,
 ) {
   FISTS(
     id = "fists",
@@ -25,7 +36,7 @@ enum class WeaponType(
     shortLabel = "FISTS",
     damage = 34f,
     range = 2.6f,
-    fireIntervalSec = 0.42f,
+    fireIntervalSec = 0.40f,
     clipSize = 0,
     reserveCap = 0,
     reloadSec = 0f,
@@ -35,6 +46,25 @@ enum class WeaponType(
     ammoPackCost = 0,
     ammoPackAmount = 0,
     accentHex = 0xFFFFB830,
+    isMelee = true,
+  ),
+  BAT(
+    id = "bat",
+    displayName = "Vice Slugger Bat",
+    shortLabel = "BAT",
+    damage = 58f,
+    range = 3.2f,
+    fireIntervalSec = 0.50f,
+    clipSize = 0,
+    reserveCap = 0,
+    reloadSec = 0f,
+    pellets = 1,
+    spreadRad = 0.25f,
+    unlockCost = 120,
+    ammoPackCost = 0,
+    ammoPackAmount = 0,
+    accentHex = 0xFFFFB830,
+    isMelee = true,
   ),
   PISTOL(
     id = "pistol",
@@ -42,10 +72,10 @@ enum class WeaponType(
     shortLabel = "9MM",
     damage = 36f,
     range = 42f,
-    fireIntervalSec = 0.30f,
+    fireIntervalSec = 0.28f,
     clipSize = 12,
     reserveCap = 120,
-    reloadSec = 1.1f,
+    reloadSec = 1.05f,
     pellets = 1,
     spreadRad = 0.03f,
     unlockCost = 0,
@@ -53,16 +83,33 @@ enum class WeaponType(
     ammoPackAmount = 24,
     accentHex = 0xFF00F0FF,
   ),
+  DUAL_PISTOLS(
+    id = "dual_pistols",
+    displayName = "Dual Vice Pistols",
+    shortLabel = "DUAL",
+    damage = 34f,
+    range = 44f,
+    fireIntervalSec = 0.14f,
+    clipSize = 24,
+    reserveCap = 192,
+    reloadSec = 1.30f,
+    pellets = 1,
+    spreadRad = 0.055f,
+    unlockCost = 360,
+    ammoPackCost = 65,
+    ammoPackAmount = 48,
+    accentHex = 0xFFFF2E93,
+  ),
   SMG(
     id = "smg",
     displayName = "Micro Neon SMG",
     shortLabel = "SMG",
     damage = 22f,
     range = 38f,
-    fireIntervalSec = 0.10f,
+    fireIntervalSec = 0.095f,
     clipSize = 30,
     reserveCap = 240,
-    reloadSec = 1.35f,
+    reloadSec = 1.30f,
     pellets = 1,
     spreadRad = 0.08f,
     unlockCost = 250,
@@ -74,12 +121,12 @@ enum class WeaponType(
     id = "shotgun",
     displayName = "Coast Pump Shotgun",
     shortLabel = "12G",
-    damage = 24f,
-    range = 22f,
-    fireIntervalSec = 0.78f,
+    damage = 25f,
+    range = 24f,
+    fireIntervalSec = 0.75f,
     clipSize = 6,
     reserveCap = 48,
-    reloadSec = 1.55f,
+    reloadSec = 1.50f,
     pellets = 5,
     spreadRad = 0.18f,
     unlockCost = 450,
@@ -92,17 +139,51 @@ enum class WeaponType(
     displayName = "Tactical Carbine",
     shortLabel = "AR-15",
     damage = 42f,
-    range = 62f,
-    fireIntervalSec = 0.14f,
+    range = 64f,
+    fireIntervalSec = 0.13f,
     clipSize = 28,
     reserveCap = 210,
-    reloadSec = 1.45f,
+    reloadSec = 1.40f,
     pellets = 1,
     spreadRad = 0.025f,
-    unlockCost = 800,
+    unlockCost = 750,
     ammoPackCost = 120,
     ammoPackAmount = 56,
     accentHex = 0xFF25E89B,
+  ),
+  SNIPER(
+    id = "sniper",
+    displayName = "Vice Long-Range Sniper",
+    shortLabel = "SNIPER",
+    damage = 145f,
+    range = 115f,
+    fireIntervalSec = 1.05f,
+    clipSize = 5,
+    reserveCap = 35,
+    reloadSec = 1.85f,
+    pellets = 1,
+    spreadRad = 0.004f,
+    unlockCost = 950,
+    ammoPackCost = 140,
+    ammoPackAmount = 10,
+    accentHex = 0xFF00F0FF,
+  ),
+  RPG(
+    id = "rpg",
+    displayName = "RPG-7 Rocket Launcher",
+    shortLabel = "RPG",
+    damage = 160f,
+    range = 85f,
+    fireIntervalSec = 1.45f,
+    clipSize = 1,
+    reserveCap = 12,
+    reloadSec = 1.95f,
+    pellets = 1,
+    spreadRad = 0.01f,
+    unlockCost = 1450,
+    ammoPackCost = 220,
+    ammoPackAmount = 3,
+    accentHex = 0xFFFF334B,
   ),
 }
 
@@ -154,6 +235,13 @@ enum class NpcBehavior {
   DEAD,
 }
 
+enum class NpcActivity {
+  STROLLER,
+  JOGGER,
+  BEACHGOER,
+  CHATTING,
+}
+
 data class BuildingBlock(
   val id: Int,
   val minX: Float,
@@ -180,6 +268,13 @@ data class WeaponInventorySlot(
   val reserveAmmo: Int,
 )
 
+enum class DriverRole {
+  NONE,
+  PLAYER,
+  POLICE_AI,
+  CIVILIAN_AI,
+}
+
 data class VehicleEntity(
   val id: Int,
   val type: VehicleType,
@@ -198,14 +293,16 @@ data class VehicleEntity(
   var aiCooldown: Float = 0f,
   var isDestroyed: Boolean = false,
   var smokeTimer: Float = 0f,
+  var isTrafficCruiser: Boolean = false,
+  var trafficAxis: Int = 0, // 0 = moving along Z on vertical road, 1 = moving along X on horizontal road
+  var trafficDir: Int = 1,
+  var trafficRoadCoord: Float = 0f,
+  var turnCooldown: Float = 0f,
+  var hornCooldown: Float = 0f,
+  var isPanicking: Boolean = false,
+  var exhaustTimer: Float = 0f,
+  var skidTimer: Float = 0f,
 )
-
-enum class DriverRole {
-  NONE,
-  PLAYER,
-  POLICE_AI,
-  CIVILIAN_AI,
-}
 
 data class NpcEntity(
   val id: Int,
@@ -218,6 +315,7 @@ data class NpcEntity(
   var hp: Float,
   val maxHp: Float,
   var behavior: NpcBehavior = NpcBehavior.WANDER,
+  var activity: NpcActivity = NpcActivity.STROLLER,
   var walkPhase: Float = 0f,
   var targetX: Float = x,
   var targetZ: Float = z,
@@ -244,6 +342,41 @@ data class ProjectileTracer(
   val r: Float,
   val g: Float,
   val b: Float,
+  val thickness: Float = 0.08f,
+)
+
+data class RocketProjectile(
+  val id: Int,
+  var x: Float,
+  var y: Float,
+  var z: Float,
+  val vx: Float,
+  val vy: Float,
+  val vz: Float,
+  val heading: Float,
+  var ttl: Float = 2.5f,
+  var smokeAccum: Float = 0f,
+)
+
+data class SmokeParticle(
+  var x: Float,
+  var y: Float,
+  var z: Float,
+  var vx: Float,
+  var vy: Float,
+  var vz: Float,
+  var ttl: Float,
+  val maxTtl: Float,
+  val size: Float,
+  val shade: Float,
+)
+
+data class TireSkidDecal(
+  val x: Float,
+  val z: Float,
+  val headingDeg: Float,
+  val length: Float,
+  val alpha: Float = 0.65f,
 )
 
 data class BloodParticle(
@@ -280,7 +413,7 @@ data class ExplosionEffect(
   val y: Float,
   val z: Float,
   var age: Float = 0f,
-  val duration: Float = 0.65f,
+  val duration: Float = 0.72f,
 )
 
 data class RadarBlip(
@@ -303,9 +436,17 @@ enum class BlipKind {
 data class CashPopup(val id: Long, val amount: Int)
 
 @Immutable
+data class HitmarkerEvent(val id: Long, val isKill: Boolean)
+
+@Immutable
+data class KillFeedItem(val id: Long, val label: String, val bounty: Int)
+
+@Immutable
 data class GameHudState(
   val phase: GamePhase = GamePhase.TITLE,
+  val activeCharacter: PlayableCharacter = PlayableCharacter.JASON,
   val districtName: String = "Ocean Beach",
+  val timeOfDay: Float = 0.08f,
   val health: Int = 100,
   val maxHealth: Int = 100,
   val armor: Int = 0,
@@ -339,5 +480,7 @@ data class GameHudState(
   val totalEarned: Int = 0,
   val highestWanted: Int = 0,
   val latestCashPopup: CashPopup? = null,
+  val latestHitmarker: HitmarkerEvent? = null,
+  val killFeed: List<KillFeedItem> = emptyList(),
   val lastPenaltyPaid: Int = 0,
 )

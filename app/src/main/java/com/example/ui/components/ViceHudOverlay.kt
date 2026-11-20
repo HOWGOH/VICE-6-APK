@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -25,7 +26,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.LocalPolice
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
@@ -80,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import com.example.game.engine.ViceGameEngine
 import com.example.game.model.BlipKind
 import com.example.game.model.GameHudState
+import com.example.game.model.HitmarkerEvent
 import com.example.game.model.RadioStation
 import com.example.game.model.WeaponType
 import com.example.game.world.CityMap
@@ -103,6 +108,7 @@ fun ViceHudOverlay(
   engine: ViceGameEngine,
   radioBanner: RadioStation?,
   showWeaponWheel: Boolean,
+  onSwitchCharacter: () -> Unit,
   onOpenMap: () -> Unit,
   onOpenArmory: () -> Unit,
   onPause: () -> Unit,
@@ -132,6 +138,14 @@ fun ViceHudOverlay(
     showCashGain = null
   }
 
+  var activeHitmarker by remember { mutableStateOf<HitmarkerEvent?>(null) }
+  LaunchedEffect(hud.latestHitmarker?.id) {
+    val hm = hud.latestHitmarker ?: return@LaunchedEffect
+    activeHitmarker = hm
+    delay(220)
+    activeHitmarker = null
+  }
+
   var sprintLatch by remember { mutableStateOf(false) }
 
   BoxWithConstraints(
@@ -139,7 +153,7 @@ fun ViceHudOverlay(
   ) {
     val compactPortrait = maxWidth < 500.dp
 
-    // Right-side invisible touch-drag camera look zone (behind interactive controls)
+    // Right-side invisible touch-drag camera look zone
     Box(
       modifier =
         Modifier.fillMaxSize().pointerInput(Unit) {
@@ -153,20 +167,38 @@ fun ViceHudOverlay(
         }
     )
 
-    // TOP ROW: Mini-map Radar (Left) + Status / Cash / Wanted / Weapon (Right)
+    // Center Tactical Crosshair & Hitmarker Flash (on foot)
+    if (!hud.inVehicle) {
+      Canvas(modifier = Modifier.align(Alignment.Center).size(36.dp)) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        drawCircle(ViceTextPrimary.copy(alpha = 0.55f), radius = 2.5f, center = Offset(cx, cy))
+        activeHitmarker?.let { hm ->
+          val col = if (hm.isKill) ViceCrimson else ViceCyan
+          val stroke = if (hm.isKill) 4.2f else 3.0f
+          val d1 = 6f
+          val d2 = 14f
+          drawLine(col, Offset(cx - d2, cy - d2), Offset(cx - d1, cy - d1), strokeWidth = stroke)
+          drawLine(col, Offset(cx + d2, cy - d2), Offset(cx + d1, cy - d1), strokeWidth = stroke)
+          drawLine(col, Offset(cx - d2, cy + d2), Offset(cx - d1, cy + d1), strokeWidth = stroke)
+          drawLine(col, Offset(cx + d2, cy + d2), Offset(cx + d1, cy + d1), strokeWidth = stroke)
+        }
+      }
+    }
+
+    // TOP ROW: Mini-map + District + Time (Left) | Character Switch + Status + Kill Feed (Right)
     Row(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.Top,
     ) {
-      Column(horizontalAlignment = Alignment.Start) {
+      Column(horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         MiniMapRadar(
           hud = hud,
           policeBlink = policeBlink,
-          sizeDp = if (compactPortrait) 96 else 112,
+          sizeDp = if (compactPortrait) 92 else 108,
           onClick = onOpenMap,
         )
-        Spacer(Modifier.height(4.dp))
         Surface(
           color = ViceMidnight.copy(alpha = 0.72f),
           shape = RoundedCornerShape(8.dp),
@@ -176,10 +208,10 @@ fun ViceHudOverlay(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
           ) {
-            Icon(Icons.Default.Map, contentDescription = "District", tint = ViceCyan, modifier = Modifier.size(13.dp))
+            Icon(Icons.Default.Map, contentDescription = "District", tint = ViceCyan, modifier = Modifier.size(12.dp))
             Spacer(Modifier.width(4.dp))
             Text(
-              text = hud.districtName.uppercase(),
+              text = "${hud.districtName.uppercase()} • ${timeLabel(hud.timeOfDay)}",
               style = MaterialTheme.typography.labelSmall,
               color = ViceTextPrimary,
             )
@@ -189,6 +221,31 @@ fun ViceHudOverlay(
 
       Column(horizontalAlignment = Alignment.End) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          // Quick-Switch Character Pill (Jason <-> Lucia)
+          val charAccent = Color(hud.activeCharacter.accentHex)
+          Surface(
+            color = ViceSurface.copy(alpha = 0.88f),
+            shape = RoundedCornerShape(12.dp),
+            modifier =
+              Modifier.height(48.dp)
+                .border(1.5.dp, charAccent, RoundedCornerShape(12.dp))
+                .clickable(onClick = onSwitchCharacter)
+                .testTag("switch_character_button"),
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Icon(Icons.Default.Person, contentDescription = "Switch character", tint = charAccent, modifier = Modifier.size(16.dp))
+              Spacer(Modifier.width(4.dp))
+              Text(
+                text = hud.activeCharacter.shortTag,
+                style = MaterialTheme.typography.labelLarge,
+                color = charAccent,
+              )
+            }
+          }
+
           // Cash Readout
           Surface(
             color = ViceSurface.copy(alpha = 0.84f),
@@ -246,12 +303,12 @@ fun ViceHudOverlay(
 
         Spacer(Modifier.height(6.dp))
 
-        // Health + Armor + Wanted Stars
+        // Health + Armor + Wanted Stars + Weapon Badge
         Surface(
           color = ViceSurface.copy(alpha = 0.82f),
           shape = RoundedCornerShape(12.dp),
           modifier =
-            Modifier.width(if (compactPortrait) 170.dp else 210.dp)
+            Modifier.width(if (compactPortrait) 174.dp else 214.dp)
               .border(1.dp, ViceMagenta.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
         ) {
           Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
@@ -284,7 +341,6 @@ fun ViceHudOverlay(
 
             Spacer(Modifier.height(5.dp))
 
-            // 5 Wanted Stars
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.SpaceBetween,
@@ -309,7 +365,6 @@ fun ViceHudOverlay(
                 }
               }
 
-              // Weapon badge (tap for quick wheel)
               Surface(
                 color = ViceMidnight.copy(alpha = 0.85f),
                 shape = RoundedCornerShape(6.dp),
@@ -321,7 +376,7 @@ fun ViceHudOverlay(
               ) {
                 val ammoText =
                   when {
-                    hud.activeWeapon == WeaponType.FISTS -> "MELEE"
+                    hud.activeWeapon.isMelee -> "MELEE"
                     hud.isReloading -> "RELOAD"
                     else -> "${hud.clipAmmo}/${hud.reserveAmmo}"
                   }
@@ -334,10 +389,31 @@ fun ViceHudOverlay(
             }
           }
         }
+
+        // Compact Kill Feed
+        if (hud.killFeed.isNotEmpty()) {
+          Spacer(Modifier.height(4.dp))
+          Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            hud.killFeed.forEach { kf ->
+              Surface(
+                color = ViceMidnight.copy(alpha = 0.76f),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.border(1.dp, ViceCrimson.copy(alpha = 0.45f), RoundedCornerShape(6.dp)),
+              ) {
+                Text(
+                  text = "${kf.label} +$${kf.bounty}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = ViceGold,
+                  modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+              }
+            }
+          }
+        }
       }
     }
 
-    // Center-top Radio Toast or Armory Prompt
+    // Center-top Radio Toast
     Column(
       modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
@@ -387,27 +463,31 @@ fun ViceHudOverlay(
       }
     }
 
-    // Quick Weapon Wheel Selector Popover
+    // Quick Weapon Wheel Selector Popover (supports up to 9 weapons cleanly)
     if (showWeaponWheel && !hud.inVehicle) {
       Surface(
         color = ViceSurface.copy(alpha = 0.94f),
         shape = RoundedCornerShape(16.dp),
         modifier =
           Modifier.align(Alignment.Center)
+            .widthIn(max = 360.dp)
             .border(1.5.dp, ViceMagenta, RoundedCornerShape(16.dp))
             .padding(4.dp),
       ) {
         Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
           Text("SELECT WEAPON", style = MaterialTheme.typography.headlineMedium, color = ViceGold)
           Spacer(Modifier.height(8.dp))
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
             hud.inventory.filter { it.unlocked }.forEach { slot ->
               val selected = slot.type == hud.activeWeapon
               Surface(
                 color = if (selected) ViceMagenta.copy(alpha = 0.30f) else ViceMidnight,
                 shape = RoundedCornerShape(10.dp),
                 modifier =
-                  Modifier.size(width = 70.dp, height = 64.dp)
+                  Modifier.size(width = 72.dp, height = 64.dp)
                     .border(
                       1.5.dp,
                       if (selected) ViceCyan else Color(slot.type.accentHex).copy(alpha = 0.5f),
@@ -422,9 +502,11 @@ fun ViceHudOverlay(
                   horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                   Text(slot.type.shortLabel, style = MaterialTheme.typography.labelLarge, color = ViceTextPrimary)
-                  if (slot.type != WeaponType.FISTS) {
-                    Text("${slot.clipAmmo}/${slot.reserveAmmo}", style = MaterialTheme.typography.labelSmall, color = ViceCyan)
-                  }
+                  Text(
+                    text = if (slot.type.isMelee) "MELEE" else "${slot.clipAmmo}/${slot.reserveAmmo}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ViceCyan,
+                  )
                 }
               }
             }
@@ -461,6 +543,15 @@ fun ViceHudOverlay(
   }
 }
 
+private fun timeLabel(t: Float): String {
+  return when {
+    t < 0.18f -> "SUNSET"
+    t < 0.56f -> "NEON NIGHT"
+    t < 0.76f -> "DAWN"
+    else -> "VICE DAY"
+  }
+}
+
 @Composable
 private fun MiniMapRadar(
   hud: GameHudState,
@@ -489,7 +580,6 @@ private fun MiniMapRadar(
         return Offset(cx + dx, cy - dz)
       }
 
-      // Ocean region east of BEACH_START_X
       val oceanEdge = toRadar(CityMap.BEACH_START_X, hud.playerZ).x
       if (oceanEdge < size.width) {
         drawRect(
@@ -499,7 +589,6 @@ private fun MiniMapRadar(
         )
       }
 
-      // Roads
       for (vr in CityMap.verticalRoads) {
         val rx = toRadar(vr.pos, hud.playerZ).x
         if (rx in 0f..size.width) {
@@ -513,7 +602,6 @@ private fun MiniMapRadar(
         }
       }
 
-      // Blips
       for (b in hud.radarBlips) {
         val p = toRadar(b.x, b.z)
         if (hypot(p.x - cx, p.y - cy) > size.minDimension * 0.47f) continue
@@ -532,7 +620,6 @@ private fun MiniMapRadar(
         }
       }
 
-      // Player heading arrow at center
       val deg = Math.toDegrees(hud.playerHeading.toDouble()).toFloat()
       rotate(degrees = deg, pivot = Offset(cx, cy)) {
         val arrow =
@@ -543,7 +630,7 @@ private fun MiniMapRadar(
             lineTo(cx - 5.5f, cy + 6f)
             close()
           }
-        drawPath(arrow, color = ViceTextPrimary)
+        drawPath(arrow, color = Color(hud.activeCharacter.accentHex))
       }
     }
   }
@@ -565,7 +652,6 @@ private fun OnFootControlsRow(
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.Bottom,
   ) {
-    // Left Analog Thumbstick
     VirtualJoystick(
       onMove = { sx, sy ->
         engine.moveStickX = sx
@@ -573,7 +659,6 @@ private fun OnFootControlsRow(
       }
     )
 
-    // Right Combat & Vehicle Cluster
     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
       if (hud.canEnterVehicle) {
         Button(
@@ -609,7 +694,7 @@ private fun OnFootControlsRow(
           Icon(Icons.Default.SwapHoriz, contentDescription = "Switch weapon", tint = ViceCyan)
         }
 
-        if (hud.activeWeapon != WeaponType.FISTS) {
+        if (!hud.activeWeapon.isMelee) {
           HudCircleButton(
             label = "RLD",
             active = hud.isReloading,
@@ -621,9 +706,8 @@ private fun OnFootControlsRow(
           }
         }
 
-        // Hold-to-fire tactical trigger
         HoldActionButton(
-          label = if (hud.activeWeapon == WeaponType.FISTS) "PUNCH" else "FIRE",
+          label = if (hud.activeWeapon.isMelee) "HIT" else "FIRE",
           accent = ViceMagenta,
           testTag = "fire_button",
           sizeDp = 74,
@@ -650,7 +734,6 @@ private fun DrivingControlsRow(
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.Bottom,
   ) {
-    // Left Steering Controls
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
       HoldActionButton(
         label = "LEFT",
@@ -672,10 +755,8 @@ private fun DrivingControlsRow(
       }
     }
 
-    // Right Driving Controls + Speedometer + Radio + Exit
     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
       Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        // Speed & Hull pill
         Surface(
           color = ViceSurface.copy(alpha = 0.86f),
           shape = RoundedCornerShape(10.dp),

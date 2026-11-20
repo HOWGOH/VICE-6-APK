@@ -99,6 +99,7 @@ private fun ViceCoastRoot(
           engine = viewModel.gameEngine,
           radioBanner = radioBanner,
           showWeaponWheel = showWeaponWheel,
+          onSwitchCharacter = { viewModel.switchCharacter() },
           onOpenMap = { viewModel.openWorldMap() },
           onOpenArmory = { viewModel.openArmory() },
           onPause = { viewModel.pauseGame() },
